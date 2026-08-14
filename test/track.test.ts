@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { aggregate, parseUsageLine, trackJsonl } from "../src/track";
+import {
+  aggregate,
+  parseUsageLine,
+  parseUsageLineWithFormat,
+  trackJsonl,
+} from "../src/track";
 import type { UsageRecord } from "../src/types";
 
 const openaiLine = JSON.stringify({
@@ -122,5 +127,82 @@ describe("aggregate", () => {
     const result = aggregate(records);
     expect(result.models[0].model).toBe("gpt-4o");
     expect(result.models[1].model).toBe("gpt-4o-mini");
+  });
+});
+
+describe("new usage formats", () => {
+  const usageSnake = JSON.stringify({
+    type: "usage",
+    model: "gpt-4o",
+    prompt_tokens: 100,
+    completion_tokens: 50,
+  });
+  const usageCamel = JSON.stringify({
+    type: "usage",
+    model: "gpt-4o-mini",
+    inputTokens: 10,
+    outputTokens: 5,
+  });
+  const topLevelAnthropic = JSON.stringify({
+    type: "usage",
+    model: "claude-3-5-sonnet",
+    input_tokens: 200,
+    output_tokens: 80,
+  });
+
+  it("parses {type:usage} lines with top-level snake_case token fields", () => {
+    const record = parseUsageLine(JSON.parse(usageSnake), 1);
+    expect(record?.kind).toBe("openai");
+    expect(record?.inputTokens).toBe(100);
+    expect(record?.outputTokens).toBe(50);
+  });
+
+  it("parses {type:usage} lines with camelCase token fields", () => {
+    const record = parseUsageLine(JSON.parse(usageCamel), 1);
+    expect(record?.kind).toBe("anthropic");
+    expect(record?.inputTokens).toBe(10);
+    expect(record?.outputTokens).toBe(5);
+  });
+
+  it("parses top-level input_tokens/output_tokens lines", () => {
+    const record = parseUsageLine(JSON.parse(topLevelAnthropic), 1);
+    expect(record?.kind).toBe("anthropic");
+    expect(record?.inputTokens).toBe(200);
+  });
+
+  it("aggregates .ndjson content mixing formats", () => {
+    const text = [usageSnake, topLevelAnthropic].join("\n");
+    const result = trackJsonl(text);
+    expect(result.total.calls).toBe(2);
+    expect(result.total.skipped).toBe(0);
+  });
+});
+
+describe("--format forcing", () => {
+  it.each(["openai", "anthropic"] as const)(
+    "parseUsageLineWithFormat respects %s",
+    (format) => {
+      const matching = format === "openai" ? openaiLine : anthropicLine;
+      const other = format === "openai" ? anthropicLine : openaiLine;
+      expect(parseUsageLineWithFormat(JSON.parse(matching), 1, format)).not.toBeNull();
+      expect(parseUsageLineWithFormat(JSON.parse(other), 1, format)).toBeNull();
+    },
+  );
+
+  it("trackJsonl with a forced format skips lines from other formats", () => {
+    const text = [openaiLine, anthropicLine].join("\n");
+    const openaiOnly = trackJsonl(text, "openai");
+    expect(openaiOnly.total.calls).toBe(1);
+    expect(openaiOnly.total.skipped).toBe(1);
+
+    const anthropicOnly = trackJsonl(text, "anthropic");
+    expect(anthropicOnly.total.calls).toBe(1);
+    expect(anthropicOnly.total.skipped).toBe(1);
+  });
+
+  it("auto format parses both formats in the same file", () => {
+    const result = trackJsonl([openaiLine, anthropicLine].join("\n"), "auto");
+    expect(result.total.calls).toBe(2);
+    expect(result.total.skipped).toBe(0);
   });
 });

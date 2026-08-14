@@ -1,5 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { findModel, normalizeModelId, PRICING } from "../src/pricing";
+import { allPricingEntries, resetOverrides, resolveModel, syncPricing } from "../src/pricing";
+import { estimate } from "../src/estimate";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 describe("PRICING database", () => {
   it("contains the required OpenAI models with correct prices", () => {
@@ -62,5 +67,78 @@ describe("PRICING database", () => {
     expect(normalizeModelId("gpt-4o-2024-08-06")).toBe("gpt-4o");
     expect(normalizeModelId("claude-3-5-sonnet-20241022")).toBe("claude-3-5-sonnet");
     expect(normalizeModelId("azure:gpt-4o")).toBe("gpt-4o");
+  });
+});
+
+describe("pricing overrides (AGENTCOST_HOME)", () => {
+  let home: string;
+  let previous: string | undefined;
+
+  beforeAll(() => {
+    home = mkdtempSync(join(tmpdir(), "agentcost-pricing-"));
+    previous = process.env.AGENTCOST_HOME;
+    process.env.AGENTCOST_HOME = home;
+  });
+
+  afterAll(() => {
+    if (previous === undefined) delete process.env.AGENTCOST_HOME;
+    else process.env.AGENTCOST_HOME = previous;
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  beforeEach(() => {
+    rmSync(join(home, "pricing.json"), { force: true });
+  });
+
+  it("syncs pricing from a local file and applies the override", async () => {
+    const registry = join(home, "registry.json");
+    writeFileSync(
+      registry,
+      JSON.stringify({
+        "gpt-4o": {
+          provider: "OpenAI",
+          inputPerMillion: 1,
+          outputPerMillion: 2,
+          updatedAt: "2026-08-14T00:00:00.000Z",
+        },
+      }),
+    );
+    const result = await syncPricing(registry);
+    expect(result.models).toContain("gpt-4o");
+
+    const resolved = resolveModel("gpt-4o");
+    expect(resolved?.overridden).toBe(true);
+    expect(resolved?.pricing.inputPerMillion).toBe(1);
+    expect(resolved?.pricing.outputPerMillion).toBe(2);
+
+    const entries = allPricingEntries();
+    expect(entries.find((entry) => entry.name === "gpt-4o")?.source).toBe("override");
+    expect(entries.find((entry) => entry.name === "gpt-4o")?.overridden).toBe(true);
+  });
+
+  it("uses overrides in estimate", async () => {
+    writeFileSync(
+      join(home, "pricing.json"),
+      JSON.stringify({
+        "gpt-4o": { provider: "OpenAI", inputPerMillion: 1, outputPerMillion: 2 },
+      }),
+    );
+    const result = estimate("gpt-4o", 1_000_000, 0);
+    expect(result.overridden).toBe(true);
+    expect(result.inputCost).toBeCloseTo(1, 10);
+  });
+
+  it("reset removes local overrides", async () => {
+    writeFileSync(
+      join(home, "pricing.json"),
+      JSON.stringify({ o1: { provider: "OpenAI", inputPerMillion: 1, outputPerMillion: 2 } }),
+    );
+    expect(resolveModel("o1")?.overridden).toBe(true);
+    expect(resetOverrides()).toBe(true);
+    expect(resolveModel("o1")?.overridden).toBe(false);
+  });
+
+  it("returns clear error for a missing local file", async () => {
+    await expect(syncPricing("/nonexistent/pricing.json")).rejects.toThrow(/Cannot read pricing file/);
   });
 });

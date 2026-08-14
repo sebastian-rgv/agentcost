@@ -1,6 +1,7 @@
 import pc from "picocolors";
 import type { Command } from "commander";
-import { findModel, normalizeModelId, PRICING } from "./pricing";
+import { normalizeModelId, PRICING, resolveModel } from "./pricing";
+import { countTokens } from "./tokens";
 import { formatMoney } from "./types";
 import type { CostBreakdown, EstimateResult, ModelPricing } from "./types";
 
@@ -66,16 +67,17 @@ export function estimate(
   inputTokens: number,
   outputTokens: number,
 ): EstimateResult {
-  const pricing = findModel(model);
-  if (!pricing) {
+  const resolved = resolveModel(model);
+  if (!resolved) {
     throw new ModelNotFoundError(model, suggestModels(model));
   }
-  const breakdown = calculateCost(pricing, inputTokens, outputTokens);
+  const breakdown = calculateCost(resolved.pricing, inputTokens, outputTokens);
   return {
     model,
-    provider: pricing.provider,
+    provider: resolved.pricing.provider,
     inputTokens,
     outputTokens,
+    overridden: resolved.overridden,
     ...breakdown,
   };
 }
@@ -86,7 +88,7 @@ function printEstimate(result: EstimateResult): void {
     return bold ? pc.bold(text) : text;
   };
   const lines = [
-    `Model     ${pc.cyan(result.model)}`,
+    `Model     ${pc.cyan(result.model)}${result.overridden ? pc.yellow("*") : ""}`,
     `Provider  ${result.provider}`,
     money("Input", result.inputCost),
     `          ${result.inputTokens.toLocaleString()} tokens`,
@@ -95,6 +97,54 @@ function printEstimate(result: EstimateResult): void {
     money("Total", result.totalCost, true),
   ];
   process.stdout.write(lines.join("\n") + "\n");
+  if (result.overridden) {
+    process.stderr.write("* cost from local price overrides\n");
+  }
+}
+
+interface EstimateCommandOptions {
+  model: string;
+  input?: string;
+  output?: string;
+  inputText?: string;
+  outputText?: string;
+  json?: boolean;
+}
+
+function resolveTokenCounts(options: EstimateCommandOptions): {
+  inputTokens: number;
+  outputTokens: number;
+} | null {
+  const hasCounts = options.input !== undefined && options.output !== undefined;
+  const hasText = options.inputText !== undefined && options.outputText !== undefined;
+  if (!hasCounts && !hasText) {
+    process.stderr.write(
+      "Provide either --input/--output (token counts) or --input-text/--output-text (text to count).\n",
+    );
+    process.exitCode = 1;
+    return null;
+  }
+  if (hasCounts) {
+    const inputTokens = parseInt(options.input as string, 10);
+    const outputTokens = parseInt(options.output as string, 10);
+    if (!Number.isFinite(inputTokens) || inputTokens < 0) {
+      process.stderr.write(`Invalid --input value: '${options.input}'\n`);
+      process.exitCode = 1;
+      return null;
+    }
+    if (!Number.isFinite(outputTokens) || outputTokens < 0) {
+      process.stderr.write(`Invalid --output value: '${options.output}'\n`);
+      process.exitCode = 1;
+      return null;
+    }
+    return { inputTokens, outputTokens };
+  }
+  const inputCount = countTokens(options.inputText as string, options.model);
+  const outputCount = countTokens(options.outputText as string, options.model);
+  for (const count of [inputCount, outputCount]) {
+    if (count.warning) process.stderr.write(count.warning + "\n");
+  }
+  return { inputTokens: inputCount.tokens, outputTokens: outputCount.tokens };
 }
 
 export function attachEstimateCommand(program: Command): void {
@@ -102,29 +152,16 @@ export function attachEstimateCommand(program: Command): void {
     .command("estimate")
     .description("Estimate the USD cost of a single LLM call")
     .requiredOption("--model <model>", "model name (e.g. gpt-4o)")
-    .requiredOption("--input <tokens>", "number of input tokens")
-    .requiredOption("--output <tokens>", "number of output tokens")
+    .option("--input <tokens>", "number of input tokens")
+    .option("--output <tokens>", "number of output tokens")
+    .option("--input-text <text>", "input text to count tokens from (instead of --input)")
+    .option("--output-text <text>", "output text to count tokens from (instead of --output)")
     .option("--json", "output machine-readable JSON")
-    .action((options: {
-      model: string;
-      input: string;
-      output: string;
-      json?: boolean;
-    }) => {
-      const inputTokens = parseInt(options.input, 10);
-      const outputTokens = parseInt(options.output, 10);
-      if (!Number.isFinite(inputTokens) || inputTokens < 0) {
-        process.stderr.write(`Invalid --input value: '${options.input}'\n`);
-        process.exitCode = 1;
-        return;
-      }
-      if (!Number.isFinite(outputTokens) || outputTokens < 0) {
-        process.stderr.write(`Invalid --output value: '${options.output}'\n`);
-        process.exitCode = 1;
-        return;
-      }
+    .action((options: EstimateCommandOptions) => {
+      const counts = resolveTokenCounts(options);
+      if (counts === null) return;
       try {
-        const result = estimate(options.model, inputTokens, outputTokens);
+        const result = estimate(options.model, counts.inputTokens, counts.outputTokens);
         if (options.json) {
           process.stdout.write(JSON.stringify(result) + "\n");
         } else {

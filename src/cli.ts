@@ -2,8 +2,14 @@ import { Command } from "commander";
 import { attachEstimateCommand } from "./estimate";
 import { attachTrackCommand } from "./track";
 import { attachModelsCommand } from "./models";
+import { attachTokensCommand } from "./tokens";
+import { attachPricingCommand } from "./pricing";
+import { attachReportCommand } from "./report";
+import { attachBudgetCommand } from "./budget";
+import { attachWatchCommand } from "./watch";
+import { attachLiveCommand } from "./live";
 
-export const VERSION = "1.0.0";
+export const VERSION = "1.1.0";
 
 export function buildProgram(): Command {
   const program = new Command();
@@ -14,6 +20,12 @@ export function buildProgram(): Command {
   attachEstimateCommand(program);
   attachTrackCommand(program);
   attachModelsCommand(program);
+  attachTokensCommand(program);
+  attachPricingCommand(program);
+  attachReportCommand(program);
+  attachBudgetCommand(program);
+  attachWatchCommand(program);
+  attachLiveCommand(program);
   return program;
 }
 
