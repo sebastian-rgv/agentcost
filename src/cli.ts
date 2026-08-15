@@ -8,14 +8,19 @@ import { attachReportCommand } from "./report";
 import { attachBudgetCommand } from "./budget";
 import { attachWatchCommand } from "./watch";
 import { attachLiveCommand } from "./live";
+import { attachSessionCommand, attachCheckCommand } from "./session";
+import { attachRouteCommand, attachPolicyCommand } from "./route";
+import { attachOptimizeCommand } from "./optimize";
+import { attachAlertsCommand } from "./alerts";
+import { attachServerCommand } from "./server";
 
-export const VERSION = "1.1.0";
+export const VERSION = "1.2.0";
 
 export function buildProgram(): Command {
   const program = new Command();
   program
     .name("agentcost")
-    .description("Estimate and track AI agent (LLM) costs")
+    .description("Estimate, track, route and gate AI agent (LLM) costs")
     .version(VERSION);
   attachEstimateCommand(program);
   attachTrackCommand(program);
@@ -26,6 +31,13 @@ export function buildProgram(): Command {
   attachBudgetCommand(program);
   attachWatchCommand(program);
   attachLiveCommand(program);
+  attachSessionCommand(program);
+  attachCheckCommand(program);
+  attachRouteCommand(program);
+  attachPolicyCommand(program);
+  attachOptimizeCommand(program);
+  attachAlertsCommand(program);
+  attachServerCommand(program);
   return program;
 }
 

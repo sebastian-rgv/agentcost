@@ -128,11 +128,24 @@ export function attachBudgetCommand(program: Command): void {
   budget
     .command("check")
     .description("Check budgets; exit 1 if any project is over budget")
-    .action(() => {
+    .action(async () => {
       const { ok, statuses } = checkBudgets(loadStore());
       if (statuses.length === 0) {
         process.stdout.write("No budgets set.\n");
         return;
+      }
+      const alerts = statuses.filter((status) => status.level === "warning" || status.level === "over");
+      if (alerts.length > 0) {
+        const { evaluateAlertsForThresholds } = await import("./alerts");
+        await evaluateAlertsForThresholds(
+          alerts.map((status) => ({
+            name: status.project,
+            limit: status.monthly,
+            spent: status.spent,
+            percent: status.percent,
+            kind: "budget" as const,
+          })),
+        );
       }
       const headers = ["Project", "Monthly", "Spent", "Percent", "Status"];
       const rows = statuses.map((status) => [

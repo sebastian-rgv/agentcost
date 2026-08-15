@@ -26,6 +26,11 @@ export interface UsageRecord {
   inputTokens: number;
   outputTokens: number;
   line: number;
+  task?: string;
+  kindOfCall?: "call" | "retry" | "error";
+  toolCalls?: number;
+  latencyMs?: number;
+  contextWindow?: number;
 }
 
 export interface ModelAggregate {
@@ -73,6 +78,11 @@ export interface StoreEntry {
   project?: string;
   agent?: string;
   sessionId?: string;
+  task?: string;
+  kind?: "call" | "retry" | "error";
+  toolCalls?: number;
+  latencyMs?: number;
+  contextWindow?: number;
 }
 
 export interface LiveCall {
@@ -148,6 +158,108 @@ export interface ReportResult {
   trend: TrendPoint[];
   topModels: ReportGroup[] | null;
   budgetWarnings: BudgetWarning[];
+}
+
+export type QualityTier = "low" | "medium" | "high" | "critical";
+
+export interface ModelQualityMeta {
+  tier: QualityTier;
+  speed: "fast" | "medium" | "slow";
+  context: number;
+  modalities: string[];
+  benchmark: number;
+}
+
+export interface Session {
+  id: string;
+  project: string;
+  limit: number;
+  startedAt: string;
+  endedAt?: string;
+  blocked?: boolean;
+}
+
+export interface SessionStatus {
+  id: string;
+  project: string;
+  limit: number;
+  spent: number;
+  percent: number;
+  remaining: number;
+  level: BudgetLevel;
+  active: boolean;
+  blocked: boolean;
+}
+
+export interface PolicyRule {
+  task: string;
+  quality: QualityTier;
+  allow: string[];
+  deny?: string[];
+  updatedAt: string;
+}
+
+export interface RouteResult {
+  task: string;
+  taskType: string;
+  requestedQuality: QualityTier;
+  model: string;
+  provider: string;
+  tier: QualityTier;
+  speed: string;
+  context: number;
+  blendedPricePerMillion: number;
+  reason: string;
+  downgraded: boolean;
+  policyMatched: string | null;
+}
+
+export interface AlertConfig {
+  slackWebhook?: string;
+  telegramBotToken?: string;
+  telegramChatId?: string;
+  webhook?: string;
+  enabled: boolean;
+  updatedAt: string;
+}
+
+export interface AlertState {
+  [key: string]: { firedAt: string };
+}
+
+export interface AlertEvent {
+  name: string;
+  limit: number;
+  spent: number;
+  percent: number;
+  kind: "session" | "budget";
+}
+
+export interface OptimizeLoop {
+  type: "retry-storm" | "tool-storm" | "context-pressure";
+  model: string;
+  count: number;
+  estWaste: number;
+  detail: string;
+}
+
+export interface OptimizeSuggestion {
+  model: string;
+  tier: QualityTier;
+  calls: number;
+  cost: number;
+  avgInputTokens: number;
+  avgOutputTokens: number;
+  suggestedModel: string;
+  suggestedTier: QualityTier;
+  estSaving: number;
+  reasons: string[];
+}
+
+export interface OptimizeResult {
+  project: string;
+  suggestions: OptimizeSuggestion[];
+  loops: OptimizeLoop[];
 }
 
 export function formatMoney(value: number): string {

@@ -1,6 +1,6 @@
 # agentcost
 
-A complete CLI for estimating and tracking AI agent (LLM) costs.
+A complete CLI + SDK for estimating, tracking, **routing** and **limiting** AI agent (LLM) costs.
 
 Built with strict TypeScript, ESM, Node >= 18. Runtime dependencies: `commander`, `picocolors` and `js-tiktoken` (real token counting).
 
@@ -21,10 +21,17 @@ npx agentcost --help
 | `models` | List all models and their prices per 1M tokens |
 | `tokens` | Count tokens in a text using the model's tokenizer |
 | `pricing` | Sync/reset local price overrides |
-| `report` | Aggregate costs from the local store |
+| `report` | Aggregate costs, export client invoices, emit OpenTelemetry metrics |
 | `budget` | Manage monthly budgets per project |
 | `watch` | Watch a directory for usage logs and print calls live |
 | `live` | Live terminal dashboard of usage logs |
+| `session` | Start/end/list ephemeral agent sessions with spending limits |
+| `check` | Agent-readable session status (`$2.30 / $5.00 (46%, remaining $2.70)`) |
+| `route` | Pick the cheapest model that meets a quality tier + budget |
+| `policy` | Pin allowed models per task type and quality tier |
+| `optimize` | Suggest model changes per project from real store data |
+| `alerts` | Slack/Telegram/webhook alerts at 80% and 100% of budget |
+| `server` | HTTP server + web dashboard (opencost/kubecost style) |
 
 All paths that use `~/.agentcost` respect the `AGENTCOST_HOME` environment variable.
 
@@ -237,6 +244,226 @@ Files already seen are skipped using a hash+offset state stored in `~/.agentcost
 
 Same as `watch`, but with a live terminal dashboard refreshed every 2 seconds (total, calls, per model, calls/minute, top agent/project). Ctrl+C prints the final summary as a report. When the terminal is not a TTY it falls back to `watch`.
 
+## Agentic sessions and limits
+
+### `agentcost session`
+
+Ephemeral sessions with a hard spending limit. Usage tagged with a session id is
+counted automatically from the store.
+
+```
+Usage: agentcost session start --project <name> --limit <amount>
+Usage: agentcost session end [--id <id>]
+Usage: agentcost session list [--active] [--json]
+Usage: agentcost session reset --id <id>
+```
+
+```bash
+$ agentcost session start --project alpha --limit $5
+Session started: ses_OsqvWtpqi_PmIsn- (project 'alpha', limit $5).
+```
+
+`session end` closes the most recently started active session when `--id` is omitted.
+
+### `agentcost check`
+
+Human- and agent-readable session status. Designed to be parsed by agents.
+
+```
+Usage: agentcost check [options]
+
+Options:
+  --session <id>     session id to check
+  --json             output machine-readable JSON
+  --exit-if-over     exit 1 when the session is over its limit
+  --kill             open the kill switch (block the session) when over
+```
+
+```bash
+$ agentcost check --session ses_x
+session ses_x (alpha)
+spent $2.30 / $5  (46.0%, remaining $2.70)
+state: active
+
+$ agentcost check --session ses_x --json
+{"session":{"id":"ses_x",...,"spent":2.3,"percent":46,...},"ok":true,"reason":"within limit"}
+```
+
+`--exit-if-over` is the exit-code blocker: CI or an agent can call
+`check --session X --exit-if-over` before each turn and stop when it returns `1`.
+`--kill` is the real circuit breaker: it marks the session **blocked** on disk, and
+`track --save --session` and the SDK refuse any further usage for that session
+until `session reset --id` unblocks it.
+
+## Model routing
+
+### `agentcost route`
+
+Returns the cheapest model that meets a quality tier and (optionally) a budget.
+Quality tiers: `low` < `medium` < `high` < `critical`.
+
+```
+Usage: agentcost route [options]
+
+Options:
+  --task <description>  task description (e.g. 'refactor the auth module')
+  --quality <tier>      quality tier: low, medium, high or critical
+  --max-cost <amount>   max blended price per 1M tokens in USD
+  --session <id>        respect this session's budget (auto-downgrade at 80%)
+  --json                output machine-readable JSON
+```
+
+```bash
+$ agentcost route --task "refactor the auth module" --quality high --json
+{"task":"refactor the auth module","taskType":"coding","requestedQuality":"high",
+ "model":"deepseek-reasoner","provider":"DeepSeek","tier":"high",...}
+```
+
+Task descriptions are classified automatically (`coding`, `writing`, `planning`,
+`review`, `classification`, `research`, `general`). Quality metadata per model
+(tier, speed, context, modalities, benchmark score) lives in `src/quality.ts`.
+
+**Budget awareness:** when `--session` is passed and the session is at >= 80% of
+its limit, the router downgrades the tier automatically, so the agent keeps
+working with cheaper models instead of being blocked.
+
+### `agentcost policy`
+
+Pin allowed/denied models per task type and quality tier. The router never returns
+a model outside these rules.
+
+```
+Usage: agentcost policy set --task <type> --quality <tier> --allow "m1,m2" [--deny "m3"]
+Usage: agentcost policy list [--json]
+Usage: agentcost policy remove --task <type> --quality <tier>
+```
+
+```bash
+$ agentcost policy set --task coding --quality high --allow "gpt-4o,claude-3-7-sonnet"
+Policy set: 'coding' + quality 'high' allows [gpt-4o, claude-3-7-sonnet].
+```
+
+## Optimizer (learning from real data)
+
+### `agentcost optimize`
+
+Analyzes the local store and suggests cheaper model swaps per project using real
+spend, plus detects expensive loops.
+
+```
+Usage: agentcost optimize --project <name> [--json]
+```
+
+Detected loop patterns (all based on store data, not guesses):
+
+- **Retry storms** — consecutive `kind: "retry"`/`"error"` calls to the same model.
+- **Tool-call storms** — many calls to the same model inside a rolling 60s window.
+- **Context pressure** — calls using >= 80% of the model's context window.
+
+Suggestions include the observed average cost/call and the estimated saving, so
+you can act on numbers. Record failures from your apps by tagging entries with
+`kind: "retry"`/`"error"` (via `track --save` on log lines with a `kind` field, or
+the SDK).
+
+## Alerts and kill switch
+
+### `agentcost alerts`
+
+Alert channels fire once per threshold at 80% and 100% of a session limit or a
+project's monthly budget (`check` and `budget check` both trigger them).
+
+```
+Usage: agentcost alerts set [--slack <url>] [--telegram-token <t> --telegram-chat <c>] [--webhook <url>] [--disable]
+Usage: agentcost alerts list
+Usage: agentcost alerts clear
+Usage: agentcost alerts test [--level warning|over]
+```
+
+```bash
+$ agentcost alerts set --slack https://hooks.slack.com/services/T000/B000/XXX --webhook https://myapp/webhook
+Alerts enabled: Slack, webhook
+```
+
+## Ecosystem and integrations
+
+### Web dashboard and server (opencost/kubecost style)
+
+```
+Usage: agentcost server [--host 0.0.0.0] [--port 8080] [--peers url1,url2]
+```
+
+- Dashboard: `http://localhost:8080/dashboard`
+- JSON APIs: `/api/store`, `/api/sessions`, `/api/report`, `/api/policies`, `/api/alerts`, `/api/peers`, `/api/store/push`, `/health`
+- Multi-machine: run one server per machine and aggregate their reports with `--peers`.
+
+### OpenTelemetry
+
+`agentcost report --otel-endpoint http://collector:4318` emits cost, token and
+call metrics (OTLP/HTTP JSON) with tags (`project`, `model`, `provider`,
+`session`): `agentcost.cost.total`, `agentcost.calls`, `agentcost.tokens.input`,
+`agentcost.tokens.output`, plus per-model variants.
+
+### Client billing export
+
+```
+Usage: agentcost report --export-client "<client>" [--json]
+```
+
+Outputs a CSV invoice (totals, by project, by agent, line items) ready for
+freelance billing. Add `--json` for a parseable structure.
+
+### JS SDK
+
+`agentcost` also ships as a library at `@agentcost/sdk`:
+
+```ts
+import { sdk } from "agentcost/sdk";
+
+const session = sdk.createSession("alpha", 5);
+sdk.reportUsage({ model: "gpt-4o", inputTokens: 1000, outputTokens: 500, sessionId: session.id });
+const { ok, status } = sdk.checkSession(session.id);
+if (!ok) process.exit(1);
+
+const model = sdk.route("refactor the auth module", "high", { sessionId: session.id }).model;
+```
+
+`reportUsage` rejects unknown sessions and sessions blocked by the kill switch.
+
+### Python SDK
+
+`./sdk/python` provides the same `report_usage`, `create_session`, `end_session`
+and `check_session` helpers against the shared store:
+
+```bash
+pip install -e ./sdk/python
+```
+
+```python
+from agentcost import report_usage, create_session, check_session
+session = create_session("alpha", 5.0)
+report_usage(model="gpt-4o", input_tokens=1000, output_tokens=500, session_id=session["id"])
+if not check_session(session["id"])["ok"]:
+    raise SystemExit("session over budget")
+```
+
+### GitHub Action
+
+`.github/actions/agentcost-cost` fails CI when the estimated LLM cost rises more
+than `threshold`% versus a committed baseline:
+
+```yaml
+- uses: ./.github/actions/agentcost-cost
+  with:
+    threshold: "20"
+    baseline-file: ".agentcost-baseline.json"
+```
+
+### Agentic playbook
+
+`docs/playbook.md` contains ready-to-paste system prompts that make any agent
+use `check`/`route` and self-limit (session start → route → check per turn →
+kill switch).
+
 ## Pricing registry
 
 The default registry URL for `pricing sync` is a public example gist:
@@ -276,6 +503,21 @@ Included providers and models (input/output per 1M tokens, USD):
 | Meta      | llama-3.3-70b (via provider)   | 0.59   | 0.79   |
 | Meta      | llama-3.1-8b                   | 0.05   | 0.08   |
 
+## Model quality tiers
+
+Quality metadata used by `route` and `optimize` lives in `src/quality.ts`:
+
+| Tier | Example models | Use for |
+| --- | --- | --- |
+| `low` | gpt-4.1-nano, llama-3.1-8b | classification, extraction, drafts |
+| `medium` | gpt-4o-mini, claude-3-5-haiku, deepseek-chat | summarization, first-pass writing |
+| `high` | gpt-4o, claude-3-7-sonnet, deepseek-reasoner | coding, planning, reasoning |
+| `critical` | o1, claude-3-opus | production-grade reasoning, hard analysis |
+
+Each model also records `speed`, `context` (window in tokens), `modalities`
+and a `benchmark` score, so the router can pick the cheapest model that still
+meets the requested tier.
+
 ## How to contribute prices
 
 Model IDs with date/provider suffixes are matched automatically (e.g. `gpt-4o-2024-08-06` resolves to `gpt-4o`, `azure:gpt-4o` resolves to `gpt-4o`).
@@ -305,8 +547,12 @@ All state lives under `~/.agentcost` (override with `AGENTCOST_HOME`):
 
 | File | Purpose |
 | --- | --- |
-| `store.jsonl` | Append-only usage entries written by `track --save`, `watch --save` and `live --save` |
+| `store.jsonl` | Append-only usage entries written by `track --save`, `watch --save`, `live --save` and the SDKs |
 | `budget.json` | Project budgets set with `budget set` |
+| `sessions.json` | Ephemeral sessions created with `session start` |
+| `policy.json` | Model routing policies set with `policy set` |
+| `alerts.json` | Alert channels configured with `alerts set` |
+| `alerts-state.json` | Fired-threshold bookkeeping (so alerts fire once per crossing) |
 | `pricing.json` | Local price overrides written by `pricing sync` |
 | `watch-state.json` | Hash+offset bookkeeping for `watch`/`live` |
 

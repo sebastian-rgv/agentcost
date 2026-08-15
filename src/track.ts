@@ -70,12 +70,24 @@ export function parseUsageLine(rec: unknown, line: number): UsageRecord | null {
     found = pickTokens(obj);
   }
   if (!found) return null;
+  const num = (value: unknown): number | null =>
+    typeof value === "number" && Number.isFinite(value) ? value : null;
+  const str = (value: unknown): string | undefined =>
+    typeof value === "string" ? value : undefined;
+  const kindValue = str(obj.kind) ?? str(obj.status);
+  const kindOfCall: UsageRecord["kindOfCall"] =
+    kindValue === "retry" || kindValue === "error" ? kindValue : undefined;
   return {
     kind: found.kind,
     model,
     inputTokens: found.input,
     outputTokens: found.output,
     line,
+    task: str(obj.task),
+    kindOfCall,
+    toolCalls: num(obj.toolCalls) ?? num(obj.tool_calls) ?? undefined,
+    latencyMs: num(obj.latencyMs) ?? num(obj.latency_ms) ?? undefined,
+    contextWindow: num(obj.contextWindow) ?? num(obj.context_window) ?? undefined,
   };
 }
 
@@ -240,6 +252,11 @@ export function entryFromRecord(
     project: context?.project,
     agent: context?.agent,
     sessionId: context?.sessionId,
+    task: record.task,
+    kind: record.kindOfCall,
+    toolCalls: record.toolCalls,
+    latencyMs: record.latencyMs,
+    contextWindow: record.contextWindow,
   };
 }
 
@@ -262,7 +279,7 @@ export function attachTrackCommand(program: Command): void {
     .option("--agent <name>", "tag saved entries with an agent name")
     .option("--session <id>", "tag saved entries with a session id")
     .option("--json", "output machine-readable JSON")
-    .action((file: string, options: {
+    .action(async (file: string, options: {
       format?: string;
       save?: boolean;
       project?: string;
@@ -286,6 +303,24 @@ export function attachTrackCommand(program: Command): void {
         return;
       }
       if (options.save) {
+        if (options.session !== undefined) {
+          const { findSession } = await import("./session");
+          const session = findSession(options.session);
+          if (!session) {
+            process.stderr.write(
+              `Session '${options.session}' not found. Start one with 'agentcost session start'.\n`,
+            );
+            process.exitCode = 1;
+            return;
+          }
+          if (session.blocked) {
+            process.stderr.write(
+              `Session '${options.session}' is blocked by the kill switch. Reset it with 'agentcost session reset --id ${options.session}'.\n`,
+            );
+            process.exitCode = 1;
+            return;
+          }
+        }
         const lines = readFileSync(file, "utf8").split("\n");
         let saved = 0;
         for (let i = 0; i < lines.length; i += 1) {

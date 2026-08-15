@@ -1,7 +1,7 @@
 {
   "name": "agentcost",
-  "version": "1.1.0",
-  "description": "CLI para estimar y trackear costos de agentes AI (LLM calls)",
+  "version": "1.2.0",
+  "description": "CLI + SDK para estimar, trackear, rutear y limitar costos de agentes AI (LLM calls)",
   "type": "module",
   "bin": {
     "agentcost": "./dist/index.js"
@@ -13,6 +13,11 @@
     ".": {
       "import": "./dist/index.js",
       "require": "./dist/index.cjs"
+    },
+    "./sdk": {
+      "import": "./dist/sdk.js",
+      "require": "./dist/sdk.cjs",
+      "types": "./dist/sdk.d.ts"
     }
   },
   "types": "./dist/index.d.ts",

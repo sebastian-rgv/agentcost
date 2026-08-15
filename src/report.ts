@@ -268,14 +268,42 @@ export function attachReportCommand(program: Command): void {
     .option("--project <name>", "filter by project")
     .option("--agent <name>", "filter by agent")
     .option("--top <n>", "show the top N most expensive models")
+    .option("--export-client <name>", "export a billing report for a client (CSV)")
+    .option("--otel-endpoint <url>", "emit cost metrics to an OpenTelemetry collector (OTLP HTTP)")
     .option("--json", "output machine-readable JSON")
-    .action((options: {
+    .action(async (options: {
       period?: string;
       project?: string;
       agent?: string;
       top?: string;
+      exportClient?: string;
+      otelEndpoint?: string;
       json?: boolean;
     }) => {
+      if (options.exportClient !== undefined) {
+        const entries = loadStore();
+        const { buildClientExport, printClientExport, renderExportSummary } = await import("./export");
+        const result = buildClientExport(options.exportClient, entries);
+        printClientExport(result, options.json === true);
+        if (!options.json) {
+          process.stderr.write(renderExportSummary(result) + "\n");
+        }
+        return;
+      }
+      if (options.otelEndpoint !== undefined) {
+        const { emitStoreMetrics } = await import("./otel");
+        try {
+          const sent = await emitStoreMetrics(options.otelEndpoint, loadStore(), {
+            project: options.project ?? "all",
+          });
+          process.stdout.write(`Emitted ${sent} cost metric(s) to ${options.otelEndpoint}.\n`);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          process.stderr.write(`otel emit failed: ${message}\n`);
+          process.exitCode = 1;
+        }
+        return;
+      }
       const period = parseReportPeriod(options.period);
       if (period === null) {
         process.stderr.write(

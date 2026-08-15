@@ -8,7 +8,7 @@ import {
   readFileSync,
   writeFileSync,
 } from "node:fs";
-import type { BudgetRule, StoreEntry } from "./types";
+import type { AlertConfig, AlertState, BudgetRule, PolicyRule, Session, StoreEntry } from "./types";
 
 export function agentcostHome(): string {
   const override = process.env.AGENTCOST_HOME;
@@ -29,6 +29,77 @@ export function pricingOverridesPath(): string {
 
 export function watchStatePath(): string {
   return join(agentcostHome(), "watch-state.json");
+}
+
+export function sessionsPath(): string {
+  return join(agentcostHome(), "sessions.json");
+}
+
+export function policyPath(): string {
+  return join(agentcostHome(), "policy.json");
+}
+
+export function alertsPath(): string {
+  return join(agentcostHome(), "alerts.json");
+}
+
+export function alertsStatePath(): string {
+  return join(agentcostHome(), "alerts-state.json");
+}
+
+function readJsonFile<T>(file: string, fallback: T): T {
+  if (!existsSync(file)) return fallback;
+  try {
+    const parsed = JSON.parse(readFileSync(file, "utf8")) as unknown;
+    if (parsed === null || typeof parsed !== "object") return fallback;
+    return parsed as T;
+  } catch {
+    return fallback;
+  }
+}
+
+function writeJsonFile(file: string, value: unknown): void {
+  const dir = agentcostHome();
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  writeFileSync(file, JSON.stringify(value, null, 2) + "\n", "utf8");
+}
+
+export function loadSessions(): Session[] {
+  return readJsonFile<Session[]>(sessionsPath(), []);
+}
+
+export function saveSessions(sessions: Session[]): void {
+  writeJsonFile(sessionsPath(), sessions);
+}
+
+export function loadPolicies(): PolicyRule[] {
+  return readJsonFile<PolicyRule[]>(policyPath(), []);
+}
+
+export function savePolicies(policies: PolicyRule[]): void {
+  writeJsonFile(policyPath(), policies);
+}
+
+export function loadAlertConfig(): AlertConfig | null {
+  const config = readJsonFile<AlertConfig | null>(alertsPath(), null);
+  if (config === null) return null;
+  return {
+    ...config,
+    enabled: config.enabled ?? true,
+    updatedAt: config.updatedAt ?? new Date().toISOString(),
+  };
+}
+
+export function saveAlertConfig(config: AlertConfig): void {
+  writeJsonFile(alertsPath(), config);
+}
+
+export function loadAlertState(): AlertState {
+  return readJsonFile<AlertState>(alertsStatePath(), {});
+}
+
+export function saveAlertState(state: AlertState): void {
+  writeJsonFile(alertsStatePath(), state);
 }
 
 export function loadStore(): StoreEntry[] {
