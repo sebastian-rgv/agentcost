@@ -446,18 +446,6 @@ if not check_session(session["id"])["ok"]:
     raise SystemExit("session over budget")
 ```
 
-### GitHub Action
-
-`.github/actions/agentcost-cost` fails CI when the estimated LLM cost rises more
-than `threshold`% versus a committed baseline:
-
-```yaml
-- uses: ./.github/actions/agentcost-cost
-  with:
-    threshold: "20"
-    baseline-file: ".agentcost-baseline.json"
-```
-
 ### Agentic playbook
 
 `docs/playbook.md` contains ready-to-paste system prompts that make any agent

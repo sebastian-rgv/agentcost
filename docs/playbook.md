@@ -42,13 +42,12 @@ PROHIBIDO:
 Al terminar: agentcost session end --id <sessionId>
 ```
 
-## 3. Prompt para CI / GitHub Action
+## 3. Prompt para CI
 
 ```
-La CI ejecuta agentcost (workflow agentcost-cost.yml) y falla si el costo estimado
-sube más del X% contra el baseline. Si tu PR falla por "Estimated LLM cost increased":
+La CI usa agentcost check --exit-if-over para bloquear pasos que exceden el
+presupuesto. Si un paso falla por límite agotado:
 - Revisa si el aumento es legítimo (más tokens de contexto, nuevo feature).
-- Si es legítimo, actualiza el baseline: .github/actions/agentcost-cost con write-baseline: true.
 - Si NO es legítimo, optimiza: agentcost optimize --project <proyecto> y aplica los cambios sugeridos.
 ```
 
