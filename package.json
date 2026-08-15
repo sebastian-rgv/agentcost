@@ -1,13 +1,14 @@
 {
   "name": "agentcost",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "CLI + SDK para estimar, trackear, rutear y limitar costos de agentes AI (LLM calls)",
   "type": "module",
   "bin": {
     "agentcost": "./dist/index.js"
   },
   "files": [
-    "dist"
+    "dist",
+    "skills"
   ],
   "exports": {
     ".": {
@@ -28,6 +29,7 @@
     "build": "tsup",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
+    "skill:build": "node scripts/generate-skill-markdown.ts",
     "prepublishOnly": "npm run build && npm run test && npm run typecheck"
   },
   "keywords": [

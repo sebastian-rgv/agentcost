@@ -13,8 +13,9 @@ import { attachRouteCommand, attachPolicyCommand } from "./route";
 import { attachOptimizeCommand } from "./optimize";
 import { attachAlertsCommand } from "./alerts";
 import { attachServerCommand } from "./server";
+import { attachSkillCommand } from "./skill";
 
-export const VERSION = "1.2.0";
+export const VERSION = "1.3.0";
 
 export function buildProgram(): Command {
   const program = new Command();
@@ -38,6 +39,7 @@ export function buildProgram(): Command {
   attachOptimizeCommand(program);
   attachAlertsCommand(program);
   attachServerCommand(program);
+  attachSkillCommand(program);
   return program;
 }
 

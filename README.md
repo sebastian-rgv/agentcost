@@ -32,8 +32,61 @@ npx agentcost --help
 | `optimize` | Suggest model changes per project from real store data |
 | `alerts` | Slack/Telegram/webhook alerts at 80% and 100% of budget |
 | `server` | HTTP server + web dashboard (opencost/kubecost style) |
+| `skill` | Install the agentcost skill (`npx agentcost skill install`) |
 
 All paths that use `~/.agentcost` respect the `AGENTCOST_HOME` environment variable.
+
+## For AI agents: use agentcost as a skill
+
+Any coding agent (opencode, Claude, Cursor, Copilot, etc.) can self-report and
+self-query its own LLM spend. Install the skill with one command:
+
+```bash
+npx agentcost skill install
+# → agentcost skill installed at ~/.agents/skills/agentcost/SKILL.md
+# target another agent with: npx agentcost skill install --dir ~/.claude/skills/agentcost
+# preview it: npx agentcost skill show
+```
+
+The skill (`SKILL.md`) is bundled inside the npm package and in the repo at
+[`skills/agentcost/SKILL.md`](skills/agentcost/SKILL.md), so it can also be added
+to a skills.sh-style registry. The whole contract is **four commands**, all with
+`--json` for parsing and exit codes for blocking:
+
+```bash
+# 1. Before work: open a budgeted session and save the id
+agentcost session start --project <proyecto> --limit $5
+
+# 2. After each LLM call: record it (or use the SDK reportUsage)
+agentcost track <usage.log> --save --session <id> --project <proyecto>
+
+# 3. Before every expensive turn: ask your own cost
+agentcost check --session <id> --json
+# → {"session":{"spent":2.3,"percent":46,...},"ok":true,"reason":"within limit"}
+# → stop immediately if ok == false (or exit 1 with --exit-if-over)
+
+# 4. Pick models via the router (never by hand), it auto-downgrades near the limit
+agentcost route --task "<lo que vas a hacer>" --quality high --session <id> --json
+```
+
+Rules the agent must follow:
+
+1. **Never** choose a model manually — use `route` and take the `model` field.
+2. **Always** tag every call with `--session <id>` (or SDK `sessionId`).
+3. **Stop** calling the LLM as soon as `check` returns `ok: false`.
+4. At the end, `session end --id <id>`.
+
+Self-service queries for the agent:
+
+| Necesito... | Comando |
+| --- | --- |
+| Mi gasto actual de una sesión | `agentcost check --session <id> --json` |
+| Todas las sesiones y su gasto | `agentcost session list --json` |
+| Totales por modelo/proyecto/agente | `agentcost report --period all --json` |
+| Qué modelo usar sin pasarme | `agentcost route --task "..." --quality X --session <id> --json` |
+| Dónde estoy gastando de más | `agentcost optimize --project X --json` |
+| Pararme si me paso | `agentcost check --session <id> --exit-if-over --kill` |
+| Avisos a Slack/Telegram/webhook | `agentcost alerts set --slack <url> --webhook <url>` |
 
 ### `agentcost estimate`
 
@@ -192,14 +245,17 @@ Aggregate costs from the local store.
 Usage: agentcost report [options]
 
 Options:
-  --period <period>  period: today, week, month or all (default: "week")
-  --project <name>   filter by project
-  --agent <name>     filter by agent
-  --top <n>          show the top N most expensive models
-  --json             output machine-readable JSON
+  --period <period>      period: today, week, month or all (default: "week")
+  --project <name>       filter by project
+  --agent <name>         filter by agent
+  --top <n>              show the top N most expensive models
+  --export-client <name> export a billing report for a client (CSV)
+  --otel-endpoint <url>  emit cost metrics to an OpenTelemetry collector (OTLP HTTP)
+  --json                 output machine-readable JSON
 ```
 
-Reports totals, per-model, per-project and per-agent breakdowns, a day-by-day trend for the last 7 days, and prints budget warnings automatically.
+Reports totals, per-model, per-project and per-agent breakdowns, a day-by-day
+trend for the last 7 days, and prints budget warnings automatically.
 
 ### `agentcost budget`
 
@@ -529,20 +585,81 @@ To add or update a model:
 3. Run `npm test`, `npm run typecheck`, and `npm run build`.
 4. Open a pull request.
 
-## Local store and data
+## Database (local store)
 
-All state lives under `~/.agentcost` (override with `AGENTCOST_HOME`):
+**agentcost does not use a database server.** All data is a set of plain JSON
+files under `~/.agentcost` (override the location with the `AGENTCOST_HOME`
+environment variable). This makes the store portable, human-readable, versionable
+and shareable across machines — point any agent, SDK, CI or dashboard at the same
+directory and they all see the same costs.
 
-| File | Purpose |
+| File | Role |
 | --- | --- |
-| `store.jsonl` | Append-only usage entries written by `track --save`, `watch --save`, `live --save` and the SDKs |
-| `budget.json` | Project budgets set with `budget set` |
+| `store.jsonl` | **Main database.** Append-only JSON Lines, one entry per LLM call |
 | `sessions.json` | Ephemeral sessions created with `session start` |
+| `budget.json` | Project monthly budgets set with `budget set` |
 | `policy.json` | Model routing policies set with `policy set` |
 | `alerts.json` | Alert channels configured with `alerts set` |
-| `alerts-state.json` | Fired-threshold bookkeeping (so alerts fire once per crossing) |
+| `alerts-state.json` | Fired-threshold bookkeeping (alerts fire once per crossing) |
 | `pricing.json` | Local price overrides written by `pricing sync` |
 | `watch-state.json` | Hash+offset bookkeeping for `watch`/`live` |
+
+### `store.jsonl` schema
+
+One line per recorded LLM call. Written by `track --save`, `watch --save`,
+`live --save`, the SDKs (`reportUsage`/`report_usage`) and the server endpoint
+`POST /api/store/push`.
+
+```json
+{"ts":"2026-08-15T04:00:00.000Z","model":"gpt-4o","provider":"OpenAI","inputTokens":1000,"outputTokens":500,"cost":0.0075,"project":"alpha","agent":"coder","sessionId":"ses_xDGzs_T0NygnNNwq","task":"refactor auth","kind":"call","toolCalls":3,"latencyMs":420,"contextWindow":128000}
+```
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `ts` | string (ISO) | When the call happened |
+| `model` | string | Model id (date/provider suffixes resolve to the base id) |
+| `provider` | string | Provider name |
+| `inputTokens` / `outputTokens` | number | Token counts |
+| `cost` | number \| null | USD cost (`null` = unknown model, no price) |
+| `project` / `agent` / `sessionId` | string? | Optional grouping tags |
+| `task` | string? | Task description captured from usage logs |
+| `kind` | `"call" \| "retry" \| "error"`? | Used by `optimize` to detect retry storms |
+| `toolCalls` | number? | Tool-call count (storm detection) |
+| `latencyMs` | number? | Call latency |
+| `contextWindow` | number? | Model context window (context-pressure detection) |
+
+### `sessions.json` schema
+
+```json
+[{"id":"ses_xDGzs_T0NygnNNwq","project":"alpha","limit":5,"startedAt":"2026-08-15T04:00:00.000Z","blocked":false}]
+```
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `id` | string | `ses_` + random, returned by `session start` |
+| `project` | string | Project the session belongs to |
+| `limit` | number | Spending limit in USD |
+| `startedAt` / `endedAt` | string (ISO) | Lifecycle timestamps |
+| `blocked` | boolean? | Kill switch open (set by `check --kill`) |
+
+Session spend is **computed on demand**, never stored: `check`, `session list`
+and `route --session` sum `cost` over the store entries whose `sessionId`
+matches, so there is never a stale counter.
+
+### How data flows in and out
+
+```
+INPUT
+  usage logs (.jsonl/.ndjson/.log) ──track --save / watch / live──▶ store.jsonl
+  apps / agents ──SDK reportUsage / report_usage / POST /api/store/push──▶ store.jsonl
+
+QUERY
+  agentcost check --session X --json   → spend of one session
+  agentcost session list               → all sessions + current spend
+  agentcost report --period all --json → totals by model/project/agent
+  agentcost optimize --project X       → suggestions from real data
+  agentcost server                     → HTTP + web dashboard over the same files
+```
 
 ## Development
 
